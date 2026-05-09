@@ -1,32 +1,15 @@
 """
-Captcha Everything — exteraGram plugin.
+Captcha Everything - exteraGram plugin.
 
 Requires a captcha (pick-the-correct-emoji) before every outgoing message.
-Intended as a self-restraint / anti-impulse send filter.
-
-How it works now (v1.1.0):
-    On the first attempt to send a message the plugin shows a picture-pick
-    captcha and CANCELS the send. The user does NOT lose the typed text -
-    it stays in the input field. On a correct answer the plugin arms a
-    one-shot "pass" flag; the user simply taps send again and the message
-    flies through untouched. On a wrong answer nothing is armed and the
-    next send will show a fresh captcha.
-
-    This avoids any fragile re-send through internal APIs, which is what
-    broke v1.0.0 ("messages stopped sending after picking").
-
-Note on scope:
-    The public plugin SDK does not expose a per-keystroke hook on the
-    message input field, so "every action" here means every outgoing
-    message / edit / media caption that goes through
-    on_send_message_hook.
+The captcha is blocking: on a correct answer the message is sent
+immediately, on a wrong answer it is cancelled. No second tap needed.
 """
 
 from __future__ import annotations
 
 import random
 import threading
-import time
 from typing import Any, Dict, List, Tuple
 
 from base_plugin import BasePlugin, HookResult, HookStrategy
@@ -45,9 +28,8 @@ __description__ = (
     "Useful as a self-discipline / anti-impulse send filter."
 )
 __author__ = "@you"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __icon__ = "exteraPlugins/1"
-__app_version__ = ">=12.5.1"
 
 
 # ---------------------------------------------------------------------------
@@ -57,33 +39,31 @@ __app_version__ = ">=12.5.1"
 # (name, emoji). The name is what we ask the user to pick; the emoji is the
 # button label. Keep the set diverse so buttons look clearly different.
 _CAPTCHA_POOL: List[Tuple[str, str]] = [
-    ("cat",     "🐱"),
-    ("dog",     "🐶"),
-    ("fox",     "🦊"),
-    ("bear",    "🐻"),
-    ("panda",   "🐼"),
-    ("lion",    "🦁"),
-    ("tiger",   "🐯"),
-    ("frog",    "🐸"),
-    ("monkey",  "🐵"),
-    ("pig",     "🐷"),
-    ("owl",     "🦉"),
-    ("unicorn", "🦄"),
-    ("apple",   "🍎"),
-    ("banana",  "🍌"),
-    ("pizza",   "🍕"),
-    ("rocket",  "🚀"),
-    ("car",     "🚗"),
-    ("house",   "🏠"),
-    ("heart",   "❤️"),
-    ("star",    "⭐"),
+    ("cat",     "\U0001F431"),
+    ("dog",     "\U0001F436"),
+    ("fox",     "\U0001F98A"),
+    ("bear",    "\U0001F43B"),
+    ("panda",   "\U0001F43C"),
+    ("lion",    "\U0001F981"),
+    ("tiger",   "\U0001F42F"),
+    ("frog",    "\U0001F438"),
+    ("monkey",  "\U0001F435"),
+    ("pig",     "\U0001F437"),
+    ("owl",     "\U0001F989"),
+    ("unicorn", "\U0001F984"),
+    ("apple",   "\U0001F34E"),
+    ("banana",  "\U0001F34C"),
+    ("pizza",   "\U0001F355"),
+    ("rocket",  "\U0001F680"),
+    ("car",     "\U0001F697"),
+    ("house",   "\U0001F3E0"),
+    ("heart",   "\u2764\ufe0f"),
+    ("star",    "\u2B50"),
 ]
 
-# How long (seconds) the one-shot "pass" remains armed after a correct answer.
-# If the user doesn't hit send within this window, the pass is discarded and
-# the next attempt will show a captcha again.
-_PASS_TTL_SECONDS = 30.0
-
+# Max time we are willing to block the hook waiting for the user's answer.
+# If the user ignores the dialog for that long, we cancel the send.
+_HOOK_WAIT_SECONDS = 60.0
 
 # Settings keys
 _SK_ENABLED      = "enabled"
@@ -93,7 +73,7 @@ _SK_FAIL_TOAST   = "fail_toast"
 _DEFAULTS: Dict[str, Any] = {
     _SK_ENABLED: True,
     _SK_OPTION_COUNT: 3,     # 3 / 4 / 5
-    _SK_FAIL_TOAST: True,    # show toast on wrong answer
+    _SK_FAIL_TOAST: True,
 }
 
 
@@ -104,18 +84,9 @@ class CaptchaEverythingPlugin(BasePlugin):
 
     def on_plugin_load(self) -> None:
         self.add_on_send_message_hook()
-
-        # One-shot pass: after a correct captcha, the *next* send (within
-        # _PASS_TTL_SECONDS) is allowed to go through. Then the pass is
-        # consumed and the next send requires a new captcha.
-        self._pass_until: float = 0.0
-        self._lock = threading.Lock()
-
-        # Anti-spam: if the user is already answering a captcha, don't pop
-        # a second dialog on top when something else fires the hook.
-        self._dialog_open: bool = False
-
-        self.log("Captcha Everything v1.1.0 loaded")
+        # Serialize dialogs: one captcha at a time across all chats.
+        self._busy = threading.Lock()
+        self.log("Captcha Everything v1.2.0 loaded")
 
     def on_plugin_unload(self) -> None:
         self.log("Captcha Everything unloaded")
@@ -146,12 +117,9 @@ class CaptchaEverythingPlugin(BasePlugin):
             Text(
                 text=(
                     "1. Type a message and tap Send.\n"
-                    "2. A dialog appears asking you to pick a picture.\n"
-                    "3. If you pick correctly, your typed text stays in the input - "
-                    "just tap Send once more and the message flies through.\n"
-                    "4. If you pick wrong, nothing is sent; try again.\n\n"
-                    "The one-shot pass expires in 30 seconds after a correct "
-                    "answer, so leaving the chat cancels the bypass."
+                    "2. A dialog appears with several pictures.\n"
+                    "3. Tap the one that matches the title - the message is sent immediately.\n"
+                    "4. Tap the wrong one (or dismiss the dialog) and nothing is sent."
                 )
             ),
         ]
@@ -179,58 +147,54 @@ class CaptchaEverythingPlugin(BasePlugin):
         answer = random.choice(options)
         return answer, options
 
-    def _pass_active(self) -> bool:
-        return time.monotonic() < self._pass_until
-
-    def _consume_pass(self) -> None:
-        self._pass_until = 0.0
-
-    def _arm_pass(self) -> None:
-        self._pass_until = time.monotonic() + _PASS_TTL_SECONDS
-
     # ---- hook -------------------------------------------------------------
 
     def on_send_message_hook(self, account: int, params: Any) -> HookResult:
-        # Plugin disabled -> do nothing.
+        """Block the sending thread until the user answers the captcha."""
         if not self._get_bool(_SK_ENABLED):
             return HookResult(strategy=HookStrategy.DEFAULT)
 
-        with self._lock:
-            # One-shot pass armed by a previous successful captcha:
-            # let this send through and disarm.
-            if self._pass_active():
-                self._consume_pass()
-                return HookResult(strategy=HookStrategy.DEFAULT)
-
-            # Already showing a dialog: drop silently to avoid stacking.
-            if self._dialog_open:
-                return HookResult(strategy=HookStrategy.CANCEL)
-
-            self._dialog_open = True
-
-        # Show captcha on the UI thread and cancel this send.
-        option_count = self._get_option_count()
-        answer, options = self._pick_challenge(option_count)
-
-        def _show():
-            try:
-                self._show_captcha_dialog(answer, options)
-            except Exception as e:
-                self.log(f"Captcha: dialog failed: {e!r}")
-                with self._lock:
-                    self._dialog_open = False
+        # Only one captcha at a time. If another send fires while a dialog
+        # is already open, cancel this one silently to avoid dialog stacking.
+        if not self._busy.acquire(blocking=False):
+            return HookResult(strategy=HookStrategy.CANCEL)
 
         try:
-            client_utils.run_on_ui_thread(_show)
-        except Exception as e:
-            # If we can't even post to UI, don't lock the user out - just
-            # disarm and let sends pass to avoid bricking the chat.
-            self.log(f"Captcha: run_on_ui_thread failed: {e!r}")
-            with self._lock:
-                self._dialog_open = False
-            return HookResult(strategy=HookStrategy.DEFAULT)
+            option_count = self._get_option_count()
+            answer, options = self._pick_challenge(option_count)
 
-        return HookResult(strategy=HookStrategy.CANCEL)
+            done = threading.Event()
+            # result is a one-element list so inner closures can mutate it
+            # without needing `nonlocal`.
+            result: List[bool] = [False]
+
+            def _show() -> None:
+                try:
+                    self._show_captcha_dialog(answer, options, result, done)
+                except Exception as e:
+                    self.log(f"Captcha: dialog failed: {e!r}")
+                    done.set()
+
+            try:
+                client_utils.run_on_ui_thread(_show)
+            except Exception as e:
+                # Can't show UI at all: don't lock the user out of the chat.
+                self.log(f"Captcha: run_on_ui_thread failed: {e!r}")
+                return HookResult(strategy=HookStrategy.DEFAULT)
+
+            # Block this (non-UI) thread until the user picks something
+            # or the timeout hits. The app's sending pipeline waits for us
+            # to return, so the outcome is applied atomically to THIS send.
+            finished = done.wait(_HOOK_WAIT_SECONDS)
+            if not finished:
+                self.log("Captcha: timed out waiting for user answer")
+                return HookResult(strategy=HookStrategy.CANCEL)
+
+            if result[0]:
+                return HookResult(strategy=HookStrategy.DEFAULT)
+            return HookResult(strategy=HookStrategy.CANCEL)
+        finally:
+            self._busy.release()
 
     # ---- dialog -----------------------------------------------------------
 
@@ -238,26 +202,28 @@ class CaptchaEverythingPlugin(BasePlugin):
         self,
         answer: Tuple[str, str],
         options: List[Tuple[str, str]],
+        result: List[bool],
+        done: threading.Event,
     ) -> None:
         answer_name, _answer_emoji = answer
 
         activity = client_utils.get_last_fragment().getParentActivity()
         builder = AlertDialogBuilder(activity)
         builder.set_title(f"Pick: {answer_name}")
-        builder.set_message(
-            "Tap the correct picture. If correct, your message stays in "
-            "the input - just tap Send again to deliver it."
-        )
-        builder.set_cancelable(True)
+        builder.set_message("Tap the correct picture to send your message.")
+        # Do not let the user dismiss with back-press or tap-outside,
+        # otherwise the sending thread would be stuck waiting.
+        builder.set_cancelable(False)
 
-        # Called when the dialog is dismissed any way (button / back / tap-out)
-        # to make sure we never leave _dialog_open stuck True.
-        def _on_dismiss(*_args, **_kwargs):
-            with self._lock:
-                self._dialog_open = False
+        def _finish(correct: bool, picked_name: str = "") -> None:
+            result[0] = correct
+            if not correct and self._get_bool(_SK_FAIL_TOAST):
+                self._toast(f"Wrong. Answer was '{answer_name}'.")
+            done.set()
 
         # AlertDialog has only 3 button slots. For <=3 options use native
-        # buttons; for 4-6 render a single-choice list.
+        # buttons; for 4-6 render a single-choice list and keep a Cancel
+        # button that counts as a wrong answer.
         if len(options) <= 3:
             slots = ["positive", "negative", "neutral"]
             for slot, (name, emoji) in zip(slots, options):
@@ -268,9 +234,9 @@ class CaptchaEverythingPlugin(BasePlugin):
                 }[slot]
                 is_correct = (name == answer_name)
 
-                def _on_click(_dialog=None, _which=None, correct=is_correct, picked_name=name):
-                    self._handle_answer(correct, answer_name, picked_name)
-                    _on_dismiss()
+                def _on_click(_dialog=None, _which=None,
+                              correct=is_correct, picked_name=name):
+                    _finish(correct, picked_name)
 
                 setter(emoji, _on_click)
         else:
@@ -283,37 +249,21 @@ class CaptchaEverythingPlugin(BasePlugin):
                 else:
                     picked_name = ""
                     correct = False
-                self._handle_answer(correct, answer_name, picked_name)
-                _on_dismiss()
+                _finish(correct, picked_name)
 
             builder.set_items(labels, _on_select)
-            builder.set_negative_button(
-                "Cancel",
-                lambda *_: (self._toast("Cancelled."), _on_dismiss()),
-            )
+            builder.set_negative_button("Cancel", lambda *_: _finish(False))
 
-        # Some SDKs expose set_on_dismiss_listener; if so, wire it too.
+        # Safety net: if the dialog gets dismissed some other way, treat it
+        # as a wrong answer so the sending thread is never stuck.
         try:
-            builder.set_on_dismiss_listener(_on_dismiss)
+            builder.set_on_dismiss_listener(
+                lambda *_: (None if done.is_set() else _finish(False))
+            )
         except Exception:
             pass
 
         builder.show()
-
-    # ---- answer handling --------------------------------------------------
-
-    def _handle_answer(self, correct: bool, answer_name: str, picked_name: str) -> None:
-        if correct:
-            with self._lock:
-                self._arm_pass()
-            self._toast("Correct - tap Send again to deliver.")
-            return
-
-        if self._get_bool(_SK_FAIL_TOAST):
-            self._toast(f"Wrong. Answer was '{answer_name}'.")
-        # Make sure no stale pass is left.
-        with self._lock:
-            self._consume_pass()
 
     # ---- toast ------------------------------------------------------------
 
