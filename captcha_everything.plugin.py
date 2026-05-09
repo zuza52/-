@@ -28,8 +28,9 @@ __description__ = (
     "Useful as a self-discipline / anti-impulse send filter."
 )
 __author__ = "@you"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 __icon__ = "exteraPlugins/1"
+__sdk_version__ = ">=1.4.3.3"
 
 
 # ---------------------------------------------------------------------------

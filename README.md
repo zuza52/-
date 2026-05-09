@@ -14,6 +14,9 @@
 3. Выбери `captcha_everything.plugin.py`.
 4. Включи плагин в списке.
 
+Плагин требует:
+- exteraGram Plugin SDK `>= 1.4.3.3`
+
 ## Как это работает (v1.2.0)
 
 - Хук `on_send_message_hook` перехватывает исходящее сообщение.
