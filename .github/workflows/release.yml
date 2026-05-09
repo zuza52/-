@@ -1,0 +1,73 @@
+name: Release plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0). Leave blank to read from __version__ in the plugin."
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          else
+            INPUT="${{ inputs.version }}"
+            if [ -z "$INPUT" ]; then
+              VERSION=$(grep -E '^__version__' captcha_everything.plugin.py \
+                        | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+            else
+              VERSION="$INPUT"
+            fi
+            TAG="v${VERSION}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+
+      - name: Create tag (if missing)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -e
+          TAG="${{ steps.ver.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Captcha Everything $TAG"
+            git push origin "$TAG"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Captcha Everything ${{ steps.ver.outputs.tag }}
+          body: |
+            exteraGram plugin: pick-the-picture captcha before every outgoing message.
+
+            Install: download `captcha_everything.plugin.py` and load it in
+            exteraGram -> Settings -> Plugins -> Install from file.
+          files: |
+            captcha_everything.plugin.py
+          draft: false
+          prerelease: false
