@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>Анимация поршневого двигателя (slow-motion)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --bg1:#0b0f14;
+    --bg2:#131a22;
+    --fg:#e6edf3;
+    --muted:#8b98a5;
+    --accent:#ffb454;
+    --accent2:#6ec1ff;
+    --danger:#ff6a4d;
+    --panel:#0f151c;
+    --line:#1e2833;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:radial-gradient(ellipse at top,var(--bg2),var(--bg1));color:var(--fg);font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line);background:#0c1218cc;backdrop-filter:blur(6px);position:sticky;top:0;z-index:2}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+  header .spacer{flex:1}
+  .chip{background:#111922;border:1px solid var(--line);border-radius:999px;padding:4px 10px;color:var(--muted);font-size:12px}
+  .chip b{color:var(--fg)}
+  main{display:grid;grid-template-columns:1fr 300px;gap:16px;padding:16px;max-width:1280px;margin:0 auto}
+  @media(max-width:900px){main{grid-template-columns:1fr}}
+  .stage{background:linear-gradient(180deg,#0e141b,#0a0f15);border:1px solid var(--line);border-radius:14px;overflow:hidden;position:relative;aspect-ratio:4/3;min-height:420px}
+  canvas{display:block;width:100%;height:100%}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .panel h2{font-size:12px;margin:0 0 10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;font-weight:600}
+  .row{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .row label{flex:1;color:var(--muted)}
+  button{background:#162029;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font:inherit}
+  button:hover{border-color:#2b3a4a}
+  button.primary{background:linear-gradient(180deg,#1b6fb4,#155a93);border-color:#1d78c4}
+  input[type=range]{width:150px;accent-color:var(--accent)}
+  .legend{display:grid;grid-template-columns:14px 1fr;gap:6px 10px;align-items:center;color:var(--muted);font-size:12px}
+  .legend .sw{width:14px;height:14px;border-radius:3px;border:1px solid #0006}
+  .stroke-badge{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;font-weight:600;letter-spacing:.3px;border:1px solid var(--line);background:#0d141c}
+  .stroke-badge .dot{width:10px;height:10px;border-radius:50%}
+  footer{color:var(--muted);text-align:center;padding:10px 0 24px;font-size:12px}
+  kbd{background:#162029;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 5px;font-size:11px;color:var(--fg)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Четырёхтактный двигатель — разрез, slow-motion</h1>
+  <div class="spacer"></div>
+  <span class="chip">RPM: <b id="rpmOut">120</b></span>
+  <span class="chip">Такт: <b id="strokeOut">Впуск</b></span>
+  <span class="chip">Угол КВ: <b id="angleOut">0°</b></span>
+</header>
+
+<main>
+  <div class="stage">
+    <canvas id="cv" width="1200" height="900"></canvas>
+  </div>
+
+  <aside class="panel">
+    <h2>Управление</h2>
+    <div class="row">
+      <button id="btnPlay" class="primary">Пауза</button>
+      <button id="btnStep">Шаг</button>
+      <button id="btnReset">Сброс</button>
+    </div>
+    <div class="row">
+      <label>Скорость</label>
+      <input id="speed" type="range" min="1" max="600" value="60" />
+    </div>
+    <div class="row">
+      <label>Подписи</label>
+      <input id="labels" type="checkbox" checked />
+    </div>
+    <div class="row">
+      <label>Траектория шатуна</label>
+      <input id="trails" type="checkbox" />
+    </div>
+
+    <h2 style="margin-top:16px">Текущий такт</h2>
+    <div id="strokeBadge" class="stroke-badge"><span class="dot" style="background:#6ec1ff"></span><span>Впуск</span></div>
+    <p id="strokeDesc" style="color:var(--muted);margin:10px 0 0;font-size:13px">Поршень идёт вниз, впускной клапан открыт, в цилиндр засасывается топливо-воздушная смесь.</p>
+
+    <h2 style="margin-top:16px">Легенда</h2>
+    <div class="legend">
+      <span class="sw" style="background:#6ec1ff"></span><span>Свежая смесь</span>
+      <span class="sw" style="background:#ffb454"></span><span>Сжатая смесь</span>
+      <span class="sw" style="background:#ff6a4d"></span><span>Горение / рабочий ход</span>
+      <span class="sw" style="background:#6b7280"></span><span>Выхлопные газы</span>
+    </div>
+
+    <h2 style="margin-top:16px">Горячие клавиши</h2>
+    <div style="color:var(--muted);font-size:12px;line-height:1.9">
+      <kbd>Space</kbd> пауза &nbsp; <kbd>←</kbd>/<kbd>→</kbd> скорость &nbsp; <kbd>L</kbd> подписи
+    </div>
+  </aside>
+</main>
+
+<footer>SVG/Canvas 2D · без зависимостей · один файл</footer>
+
+<script>
+(() => {
+  'use strict';
+  // -------------------------------------------------------------------------
+  //  Engine animation: cross-section of a 4-stroke single-cylinder engine.
+  //  All drawing is vector on a 2D canvas.  Units are "engine units" mapped
+  //  to canvas pixels via a uniform scale.  +x right, +y DOWN (canvas default).
+  // -------------------------------------------------------------------------
+
+  const cv  = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+
+  // High-DPI handling
+  function fitCanvas(){
+    const rect = cv.getBoundingClientRect();
+    const dpr  = Math.min(window.devicePixelRatio||1, 2);
+    cv.width  = Math.round(rect.width  * dpr);
+    cv.height = Math.round(rect.height * dpr);
+  }
+  fitCanvas();
+  window.addEventListener('resize', fitCanvas);
+
+  // UI state
+  const ui = {
+    playing: true,
+    stepOnce: false,
+    speed: 60,           // "RPM-ish"; maps to crank deg per second
+    labels: true,
+    trails: false,
+    trailPts: [],
+  };
+
+  const $ = id => document.getElementById(id);
+  $('btnPlay').onclick  = () => { ui.playing = !ui.playing; $('btnPlay').textContent = ui.playing ? 'Пауза' : 'Пуск'; };
+  $('btnStep').onclick  = () => { ui.stepOnce = true; ui.playing = false; $('btnPlay').textContent='Пуск'; };
+  $('btnReset').onclick = () => { crankAngle = 0; ui.trailPts.length = 0; };
+  $('speed').oninput    = e => ui.speed = +e.target.value;
+  $('labels').onchange  = e => ui.labels = e.target.checked;
+  $('trails').onchange  = e => ui.trails = e.target.checked;
+
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space'){ e.preventDefault(); $('btnPlay').click(); }
+    else if (e.code === 'ArrowLeft')  { $('speed').value = Math.max(1, ui.speed-10);  ui.speed = +$('speed').value; }
+    else if (e.code === 'ArrowRight') { $('speed').value = Math.min(600, ui.speed+10); ui.speed = +$('speed').value; }
+    else if (e.code === 'KeyL'){ $('labels').checked = !ui.labels; ui.labels = $('labels').checked; }
+  });
+
+  // -------------------------------------------------------------------------
+  //  Engine geometry (in "engine units"; origin = crankshaft centre)
+  // -------------------------------------------------------------------------
+  const G = {
+    stroke:       180,      // distance TDC<->BDC
+    crankR:       90,       // stroke/2
+    rodLen:       260,      // con-rod length between centres
+    pistonW:      160,      // piston diameter (bore)
+    pistonH:      110,      // piston skirt height
+    wristPinR:    10,
+    boreClear:    6,        // cylinder wall thickness gap
+    cylTop:      -430,      // top of combustion chamber (y)
+    cylBottom:    120,      // bottom of cylinder sleeve
+    headHeight:   110,      // from cylTop upward
+    mainJournalR: 40,       // crank main journal
+    crankPinR:    26,       // crankpin
+    counterW_R:   110,      // counterweight radius
+    // valves (relative to cyl axis, x offset)
+    valveOffset:  42,       // x offset left/right of the bore centre
+    valveHeadR:   22,
+    valveStemW:   7,
+    valveTravel:  38,       // how far a valve opens downward
+    // cam
+    camR:         20,
+    camLobeExtra: 20,
+    camY:        -560,
+    camDX:        60,       // cams sit at +/- camDX
+    // spark plug
+    plugY:       -435,
+    plugW:        34,
+    plugH:        70,
+  };
+
+  // Derived
+  G.cylAxisX = 0;
+  G.pistonTopAtTDC    = G.cylTop + 20;         // face of piston when at TDC
+  G.pistonTopAtBDC    = G.pistonTopAtTDC + G.stroke;
+
+  // -------------------------------------------------------------------------
+  //  State
+  // -------------------------------------------------------------------------
+  let crankAngle = 0;        // radians, 0 = TDC, grows CW (visually)
+  let lastT = performance.now();
+
+  // Helpers
+  const TAU = Math.PI*2;
+  const deg = r => r*180/Math.PI;
+  const rad = d => d*Math.PI/180;
+  const clamp = (x,a,b)=>x<a?a:x>b?b:x;
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const smoothstep = t => t*t*(3-2*t);
+
+  // Piston kinematics (crank-slider)
+  //  y_piston = -r*cosθ - sqrt(L^2 - r^2 sin^2 θ)   (piston above crank)
+  // We want piston TOP face position along cylinder axis.
+  function pistonTopY(theta){
+    const r = G.crankR, L = G.rodLen;
+    // crankpin position (crank centre at origin)
+    const pinY = -r*Math.cos(theta);
+    const pinX =  r*Math.sin(theta);
+    // piston wristpin is directly above crankpin on the cyl axis
+    // distance from crankpin to wristpin along axis = sqrt(L^2 - pinX^2)
+    const along = Math.sqrt(Math.max(1, L*L - pinX*pinX));
+    const wristY = pinY - along;
+    // piston top face is pistonH/2 above wristpin
+    return wristY - G.pistonH/2 + 10; // small offset so ring groove sits nice
+  }
+
+  function crankPin(theta){
+    return { x: G.crankR*Math.sin(theta), y: -G.crankR*Math.cos(theta) };
+  }
+  function wristPin(theta){
+    const r = G.crankR, L = G.rodLen;
+    const pinX = r*Math.sin(theta);
+    const pinY = -r*Math.cos(theta);
+    const along = Math.sqrt(Math.max(1, L*L - pinX*pinX));
+    return { x: 0, y: pinY - along };
+  }
+
+  // -------------------------------------------------------------------------
+  //  4-stroke phase logic
+  //  Convention used:
+  //    Cycle = 720° of crank (two revolutions).
+  //    0°..180°   -> INTAKE (piston TDC->BDC, intake valve open)
+  //    180°..360° -> COMPRESSION
+  //    360°..540° -> POWER (ignition near 360°, exhaust opens near 540°)
+  //    540°..720° -> EXHAUST
+  // -------------------------------------------------------------------------
+  function cycleAngle(theta){
+    // Map crankAngle to 0..4π (two revs)
+    const a = ((theta % (2*TAU)) + 2*TAU) % (2*TAU);
+    return a;
+  }
+  function strokeInfo(theta){
+    const a = cycleAngle(theta);
+    const d = deg(a);
+    if (d < 180)  return { i:0, name:'Впуск',     color:'#6ec1ff', t:(d-0)/180,
+      desc:'Поршень идёт вниз, впускной клапан открыт, в цилиндр засасывается топливо-воздушная смесь.' };
+    if (d < 360)  return { i:1, name:'Сжатие',    color:'#ffb454', t:(d-180)/180,
+      desc:'Оба клапана закрыты, поршень идёт вверх, сжимает смесь в камере сгорания.' };
+    if (d < 540)  return { i:2, name:'Рабочий ход',color:'#ff6a4d', t:(d-360)/180,
+      desc:'Свеча даёт искру, смесь сгорает, давление газов толкает поршень вниз.' };
+    return         { i:3, name:'Выпуск',     color:'#9aa6b2', t:(d-540)/180,
+      desc:'Выпускной клапан открыт, поршень идёт вверх, выталкивает отработавшие газы.' };
+  }
+
+  // Valve lift profiles (nice smooth bumps with slight overlap at TDC of intake)
+  function intakeLift(theta){
+    const d = deg(cycleAngle(theta));
+    // Open roughly -10° (i.e. 710°..720° overlap) through 200°
+    const openStart = 350; // in cycle-degrees -> corresponds to 710..
+    // We'll build using two intervals:
+    //   a) 0..200  -> lift curve
+    //   b) 710..720 -> small overlap opening
+    let lift = 0;
+    if (d < 200){
+      const t = d/200;
+      lift = Math.sin(Math.PI*t);          // 0..1..0
+    } else if (d > 710){
+      const t = (d-710)/10;
+      lift = 0.15*Math.sin(Math.PI*t);
+    }
+    return clamp(lift,0,1);
+  }
+  function exhaustLift(theta){
+    const d = deg(cycleAngle(theta));
+    // Open from ~520..720 (end of power, full exhaust), small overlap into 0..10
+    let lift = 0;
+    if (d >= 520 && d <= 720){
+      const t = (d-520)/200;
+      lift = Math.sin(Math.PI*t);
+    } else if (d < 10){
+      const t = (d)/10;
+      lift = 0.15*(1-t);
+    }
+    return clamp(lift,0,1);
+  }
+
+  // Gas colour for combustion chamber
+  function chamberFill(theta){
+    const s = strokeInfo(theta);
+    // Pre-ignition flash near 360°..380°
+    const d = deg(cycleAngle(theta));
+    if (s.i === 0){ // intake -> filling with fresh charge
+      const t = smoothstep(s.t);
+      return mixColor('#1a2430', '#6ec1ff', clamp(t*1.2,0,0.85));
+    }
+    if (s.i === 1){ // compression -> getting hot/yellow
+      return mixColor('#6ec1ff', '#ffb454', smoothstep(s.t));
+    }
+    if (s.i === 2){ // power -> bright flash then decay
+      if (d < 380){
+        const t = (d-360)/20; // 0..1
+        return mixColor('#ffe27a', '#ff6a4d', clamp(t,0,1));
+      } else {
+        const t = (d-380)/160;
+        return mixColor('#ff6a4d', '#6b7280', clamp(t,0,1));
+      }
+    }
+    // exhaust
+    return mixColor('#6b7280', '#1a2430', smoothstep(s.t));
+  }
+
+  function mixColor(a,b,t){
+    const pa = hex(a), pb = hex(b);
+    const r = Math.round(lerp(pa[0],pb[0],t));
+    const g = Math.round(lerp(pa[1],pb[1],t));
+    const bl= Math.round(lerp(pa[2],pb[2],t));
+    return `rgb(${r},${g},${bl})`;
+  }
+  function hex(s){
+    const n = parseInt(s.slice(1),16);
+    return [(n>>16)&255,(n>>8)&255,n&255];
+  }
+
+  // -------------------------------------------------------------------------
+  //  Drawing
+  // -------------------------------------------------------------------------
+  function draw(){
+    const W = cv.width, H = cv.height;
+    ctx.save();
+    ctx.clearRect(0,0,W,H);
+
+    // Background grid (subtle)
+    drawBackdrop(W,H);
+
+    // World transform: centre, flip y so +y is up? we'll keep +y down but
+    // pan so crank origin sits a bit below centre, and scale to fit.
+    const scale = Math.min(W, H*1.2) / 900;
+    ctx.translate(W*0.48, H*0.62);
+    ctx.scale(scale, scale);
+
+    drawEngineBlock();
+    drawCylinderHead();
+    drawCombustionChamber();
+    drawValves();
+    drawCams();
+    drawSparkPlug();
+    drawPiston();
+    drawConRod();
+    drawCrankshaft();
+    if (ui.trails) drawTrails();
+    if (ui.labels) drawLabels();
+
+    ctx.restore();
+
+    // HUD updates
+    const s = strokeInfo(crankAngle);
+    $('strokeOut').textContent   = s.name;
+    $('angleOut').textContent    = (deg(cycleAngle(crankAngle))|0) + '°';
+    $('rpmOut').textContent      = (ui.speed*1).toFixed(0);
+    const badge = $('strokeBadge');
+    badge.innerHTML = `<span class="dot" style="background:${s.color}"></span><span>${s.name}</span>`;
+    $('strokeDesc').textContent = s.desc;
+  }
+
+  function drawBackdrop(W,H){
+    // faint hex grid
+    ctx.save();
+    ctx.fillStyle = '#0a0f15';
+    ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle = 'rgba(255,255,255,.035)';
+    ctx.lineWidth = 1;
+    const step = 36;
+    for (let x=0; x<W; x+=step){ ctx.beginPath(); ctx.moveTo(x+.5,0); ctx.lineTo(x+.5,H); ctx.stroke(); }
+    for (let y=0; y<H; y+=step){ ctx.beginPath(); ctx.moveTo(0,y+.5); ctx.lineTo(W,y+.5); ctx.stroke(); }
+    ctx.restore();
+  }
+
+  function drawEngineBlock(){
+    // Block outer silhouette
+    ctx.save();
+    ctx.fillStyle   = '#1d2833';
+    ctx.strokeStyle = '#0a0f15';
+    ctx.lineWidth   = 4;
+
+    // Crankcase box
+    const bx = -260, by = -60, bw = 520, bh = 320;
+    roundRect(bx, by, bw, bh, 22); ctx.fill(); ctx.stroke();
+
+    // Cylinder sleeve (outer)
+    const sx = -G.pistonW/2 - 30, sy = G.cylTop, sw = G.pistonW + 60, sh = (G.cylBottom - G.cylTop) + 20;
+    roundRect(sx, sy, sw, sh, 14); ctx.fill(); ctx.stroke();
+
+    // Cooling fins
+    ctx.fillStyle = '#16202a';
+    for (let y = G.cylTop+30; y < G.cylBottom-10; y += 28){
+      ctx.fillRect(sx-10, y, sw+20, 8);
+    }
+
+    // Inner bore (cylinder wall) — the hole the piston slides in
+    ctx.fillStyle   = '#0a0f14';
+    ctx.strokeStyle = '#2a3945';
+    ctx.lineWidth   = 3;
+    const innerX = -G.pistonW/2 - G.boreClear;
+    const innerW = G.pistonW + G.boreClear*2;
+    roundRect(innerX, G.cylTop+40, innerW, (G.cylBottom - G.cylTop) - 30, 6); ctx.fill(); ctx.stroke();
+
+    // Hatching on inside of bore (honed wall)
+    ctx.save();
+    ctx.beginPath();
+    roundRect(innerX, G.cylTop+40, innerW, (G.cylBottom - G.cylTop) - 30, 6);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(110,193,255,.05)';
+    ctx.lineWidth = 1;
+    for (let k=-400; k<400; k+=10){
+      ctx.beginPath(); ctx.moveTo(k, G.cylTop-50); ctx.lineTo(k+80, G.cylBottom+50); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(k, G.cylBottom+50); ctx.lineTo(k+80, G.cylTop-50); ctx.stroke();
+    }
+    ctx.restore();
+
+    // Oil pan suggestion
+    ctx.fillStyle = '#121920';
+    roundRect(-220, 220, 440, 40, 10); ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawCylinderHead(){
+    ctx.save();
+    // head sits on top of cylinder, contains valves & plug
+    const hx = -G.pistonW/2 - 34;
+    const hw = G.pistonW + 68;
+    const hy = G.cylTop - G.headHeight;
+    const hh = G.headHeight;
+    ctx.fillStyle   = '#243241';
+    ctx.strokeStyle = '#0a0f15';
+    ctx.lineWidth   = 4;
+    roundRect(hx, hy, hw, hh, 14); ctx.fill(); ctx.stroke();
+
+    // bolts
+    ctx.fillStyle = '#0c131a';
+    for (const x of [hx+12, hx+hw-12]){
+      for (let y=hy+14; y<hy+hh-14; y+=28){
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, TAU); ctx.fill();
+      }
+    }
+
+    // intake / exhaust ports (curved tubes entering the head)
+    ctx.strokeStyle = '#0b1218';
+    ctx.lineWidth = 2;
+    ctx.fillStyle = '#1a242f';
+
+    // intake port (left): a duct coming from upper-left
+    portPath(-G.valveOffset-30, hy+hh-14, -G.valveOffset+30, hy+10, -180, hy-10);
+    ctx.fill(); ctx.stroke();
+
+    // exhaust port (right)
+    portPath( G.valveOffset-30, hy+hh-14,  G.valveOffset+30, hy+10,  180, hy-10);
+    ctx.fill(); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function portPath(x1,y1,x2,y2,outX,outY){
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.bezierCurveTo(x1, y1-80, outX*0.7, outY+60, outX, outY);
+    ctx.lineTo(outX, outY-30);
+    ctx.bezierCurveTo(outX*0.7, outY-10, x2, y2-80, x2, y2);
+    ctx.closePath();
+  }
+
+  function drawValves(){
+    const iL = intakeLift(crankAngle);
+    const eL = exhaustLift(crankAngle);
+
+    drawValve(-G.valveOffset, iL, '#6ec1ff'); // intake (cool blue when open+filling)
+    drawValve( G.valveOffset, eL, '#ff8a5b'); // exhaust (warm hot)
+  }
+
+  function drawValve(xOff, lift, glow){
+    ctx.save();
+    ctx.translate(xOff, 0);
+
+    const closedY = G.cylTop + 10;                 // when valve is fully closed, head sits at roof
+    const openY   = closedY + G.valveTravel;
+    const y       = lerp(closedY, openY, lift);
+
+    // valve stem (going up into the head)
+    ctx.strokeStyle = '#c9d6e2';
+    ctx.lineWidth   = G.valveStemW;
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(0, G.camY + 20);
+    ctx.stroke();
+
+    // spring (coils around stem)
+    drawSpring(0, G.camY+22, 0, y+6, 10, 10);
+
+    // retainer / keeper
+    ctx.fillStyle = '#8693a1';
+    roundRect(-10, G.camY+14, 20, 10, 3); ctx.fill();
+
+    // valve head (disc)
+    ctx.beginPath();
+    ctx.ellipse(0, y, G.valveHeadR, 10, 0, 0, TAU);
+    const grd = ctx.createLinearGradient(0, y-10, 0, y+10);
+    grd.addColorStop(0,'#e6edf3');
+    grd.addColorStop(1,'#4a5866');
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.strokeStyle = '#1a242f'; ctx.lineWidth = 2; ctx.stroke();
+
+    // glow when open
+    if (lift > 0.05){
+      ctx.globalCompositeOperation = 'lighter';
+      const g = ctx.createRadialGradient(0, y+6, 1, 0, y+6, 60);
+      g.addColorStop(0, glow + 'cc');
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.fillRect(-60, y-10, 120, 70);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.restore();
+  }
+
+  function drawSpring(x1,y1,x2,y2,rad,coils){
+    ctx.save();
+    ctx.strokeStyle = '#9bb0c4';
+    ctx.lineWidth   = 2.5;
+    ctx.beginPath();
+    const dy = (y2-y1)/coils;
+    ctx.moveTo(x1, y1);
+    for (let i=0;i<coils;i++){
+      const ya = y1 + dy*i;
+      const yb = y1 + dy*(i+0.5);
+      const yc = y1 + dy*(i+1);
+      ctx.bezierCurveTo(x1+rad, ya+dy*0.2,  x1+rad, yb-dy*0.2,  x1, yb);
+      ctx.bezierCurveTo(x1-rad, yb+dy*0.2,  x1-rad, yc-dy*0.2,  x1, yc);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawCams(){
+    // Two camshafts (DOHC-ish): one over each valve
+    drawOneCam(-G.camDX, intakeLift(crankAngle));
+    drawOneCam( G.camDX, exhaustLift(crankAngle));
+  }
+  function drawOneCam(cx, lift){
+    ctx.save();
+    ctx.translate(cx, G.camY);
+
+    // cam journal
+    ctx.beginPath(); ctx.arc(0,0, G.camR, 0, TAU);
+    ctx.fillStyle = '#2b3a4a'; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 2; ctx.stroke();
+
+    // cam lobe: angle from lift.  Lobe "points down" (toward valve) when lift is max.
+    // We derive a pseudo-angle by inverting a bump: angle = acos(1-2*lift), ignoring symmetry.
+    const ang = Math.PI/2 + (1 - lift) * Math.PI;  // when lift=1 -> pi/2 (down), else around
+    const lx = Math.cos(ang) * (G.camR + G.camLobeExtra*0.2);
+    const ly = Math.sin(ang) * (G.camR + G.camLobeExtra*0.2);
+
+    // lobe shape: circle tangent to journal extended outward
+    ctx.beginPath();
+    ctx.arc(lx, ly, G.camR*0.85 + G.camLobeExtra*0.35, 0, TAU);
+    ctx.fillStyle = '#3b4d60'; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.stroke();
+
+    // blend: draw the combined convex hull-ish by overlaying an ellipse
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(lx*2, ly*2);
+    ctx.lineWidth = 0; // (no stroke) — just to hint
+    ctx.restore();
+  }
+
+  function drawSparkPlug(){
+    ctx.save();
+    // body
+    ctx.fillStyle = '#d6dde4';
+    roundRect(-G.plugW/2, G.plugY - G.plugH, G.plugW, G.plugH, 6);
+    ctx.fill();
+    ctx.strokeStyle = '#2a3945'; ctx.lineWidth = 2; ctx.stroke();
+
+    // hex nut
+    ctx.fillStyle = '#b6c1cc';
+    roundRect(-G.plugW/2-4, G.plugY - 28, G.plugW+8, 14, 2);
+    ctx.fill(); ctx.stroke();
+
+    // insulator (ceramic)
+    ctx.fillStyle = '#eadfc3';
+    roundRect(-8, G.plugY - G.plugH - 26, 16, 26, 4);
+    ctx.fill(); ctx.stroke();
+
+    // threads into head (small stub visible inside chamber ceiling)
+    ctx.fillStyle = '#8a96a3';
+    roundRect(-6, G.plugY, 12, 18, 2);
+    ctx.fill(); ctx.stroke();
+
+    // electrodes
+    ctx.strokeStyle = '#c9d6e2';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, G.plugY+18); ctx.lineTo(0, G.plugY+26); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-6, G.plugY+26); ctx.lineTo(6, G.plugY+26); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(6, G.plugY+26);  ctx.lineTo(6, G.plugY+32); ctx.stroke();
+
+    // Spark!  Only around top of power stroke (~355°..375°)
+    const d = deg(cycleAngle(crankAngle));
+    if (d >= 352 && d <= 378){
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const t = (d-352)/26;
+      const alpha = Math.sin(Math.PI*t);
+      ctx.strokeStyle = `rgba(255,240,140,${0.9*alpha})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let x=0, y=G.plugY+25;
+      ctx.moveTo(x,y);
+      for (let i=0;i<6;i++){
+        x += (Math.random()-0.5)*6;
+        y += 3;
+        ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      // glow
+      const g = ctx.createRadialGradient(0, G.plugY+28, 1, 0, G.plugY+28, 40);
+      g.addColorStop(0, `rgba(255,240,140,${0.9*alpha})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g;
+      ctx.fillRect(-40, G.plugY+10, 80, 70);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawCombustionChamber(){
+    // Region between piston top and cylinder roof, bounded by bore walls
+    const pt = pistonTopY(crankAngle);
+    const top = G.cylTop + 8;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(-G.pistonW/2, top, G.pistonW, Math.max(2, pt - top));
+    ctx.clip();
+
+    ctx.fillStyle = chamberFill(crankAngle);
+    ctx.fillRect(-G.pistonW/2-4, top-4, G.pistonW+8, (pt-top)+8);
+
+    // Swirl lines for liveliness
+    const s = strokeInfo(crankAngle);
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    const N = 8;
+    for (let i=0;i<N;i++){
+      const y = lerp(top+6, pt-6, (i+0.5)/N);
+      const phase = (crankAngle*3 + i)*1.0;
+      ctx.beginPath();
+      for (let x=-G.pistonW/2+6; x<=G.pistonW/2-6; x+=6){
+        const yy = y + Math.sin(x*0.04 + phase)*3;
+        if (x===-G.pistonW/2+6) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPiston(){
+    const top = pistonTopY(crankAngle);
+    const wp  = wristPin(crankAngle);
+
+    ctx.save();
+
+    // piston body
+    const grd = ctx.createLinearGradient(0, top, 0, top+G.pistonH);
+    grd.addColorStop(0,'#c9d4df');
+    grd.addColorStop(0.5,'#7f8d9b');
+    grd.addColorStop(1,'#3e4a57');
+    ctx.fillStyle = grd;
+    roundRect(-G.pistonW/2+2, top, G.pistonW-4, G.pistonH, 10);
+    ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 2; ctx.stroke();
+
+    // crown detail: slight dome
+    ctx.beginPath();
+    ctx.moveTo(-G.pistonW/2+2, top+4);
+    ctx.quadraticCurveTo(0, top-6, G.pistonW/2-2, top+4);
+    ctx.strokeStyle = '#2a3945'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    // piston rings
+    ctx.strokeStyle = '#0a0f15';
+    ctx.lineWidth = 1.5;
+    for (let i=0;i<3;i++){
+      const ry = top + 14 + i*10;
+      ctx.beginPath();
+      ctx.moveTo(-G.pistonW/2+4, ry); ctx.lineTo(G.pistonW/2-4, ry);
+      ctx.stroke();
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,.25)';
+      ctx.beginPath();
+      ctx.moveTo(-G.pistonW/2+4, ry-2); ctx.lineTo(G.pistonW/2-4, ry-2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // wrist pin boss (hole)
+    ctx.beginPath();
+    ctx.arc(wp.x, wp.y, G.wristPinR+6, 0, TAU);
+    ctx.fillStyle = '#1a242f'; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.stroke();
+
+    // wrist pin
+    ctx.beginPath();
+    ctx.arc(wp.x, wp.y, G.wristPinR, 0, TAU);
+    ctx.fillStyle = '#b6c1cc'; ctx.fill();
+    ctx.strokeStyle = '#2a3945'; ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawConRod(){
+    const wp = wristPin(crankAngle);
+    const cp = crankPin(crankAngle);
+
+    ctx.save();
+
+    // Rod body: I-beam styled. Draw as a quad between wristpin and crankpin with two fat ends.
+    const dx = cp.x - wp.x, dy = cp.y - wp.y;
+    const len = Math.hypot(dx,dy);
+    const ang = Math.atan2(dy, dx);
+
+    ctx.translate(wp.x, wp.y);
+    ctx.rotate(ang);
+
+    // small end
+    ctx.beginPath(); ctx.arc(0,0, G.wristPinR+10, 0, TAU);
+    ctx.fillStyle = '#5b6a7a'; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 2; ctx.stroke();
+
+    // big end
+    ctx.beginPath(); ctx.arc(len, 0, G.crankPinR+12, 0, TAU);
+    ctx.fillStyle = '#5b6a7a'; ctx.fill(); ctx.stroke();
+
+    // shaft (I-beam)
+    ctx.beginPath();
+    ctx.moveTo( 8, -6);
+    ctx.lineTo(len-8, -9);
+    ctx.lineTo(len-8,  9);
+    ctx.lineTo( 8,  6);
+    ctx.closePath();
+    const grd = ctx.createLinearGradient(0, -10, 0, 10);
+    grd.addColorStop(0,'#97a4b2');
+    grd.addColorStop(0.5,'#4a5866');
+    grd.addColorStop(1,'#97a4b2');
+    ctx.fillStyle = grd; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 1.5; ctx.stroke();
+
+    // rib highlight
+    ctx.strokeStyle = 'rgba(255,255,255,.15)';
+    ctx.beginPath(); ctx.moveTo(10,-2); ctx.lineTo(len-10,-2); ctx.stroke();
+
+    // bolts on big end cap
+    ctx.fillStyle = '#0a0f15';
+    ctx.beginPath(); ctx.arc(len-4, -G.crankPinR-6, 2.5, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(len-4,  G.crankPinR+6, 2.5, 0, TAU); ctx.fill();
+
+    // small pin visible
+    ctx.beginPath(); ctx.arc(0,0, G.wristPinR-2, 0, TAU);
+    ctx.fillStyle = '#c9d6e2'; ctx.fill();
+    ctx.strokeStyle = '#2a3945'; ctx.stroke();
+
+    // big pin visible
+    ctx.beginPath(); ctx.arc(len,0, G.crankPinR, 0, TAU);
+    ctx.fillStyle = '#c9d6e2'; ctx.fill(); ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawCrankshaft(){
+    ctx.save();
+
+    // Counterweights: two circular pie-shaped masses opposite to the crankpin
+    const a = crankAngle;
+    // Counterweight opposite crankpin direction:
+    const cwAng = a + Math.PI;
+    ctx.save();
+    ctx.rotate(cwAng);
+
+    // big counterweight body (behind)
+    ctx.beginPath();
+    ctx.arc(0,0, G.counterW_R, -0.9, 0.9, false);
+    ctx.lineTo(0,0);
+    ctx.closePath();
+    const grd = ctx.createRadialGradient(0,0,10, 0,0,G.counterW_R);
+    grd.addColorStop(0,'#4a5866');
+    grd.addColorStop(1,'#1a242f');
+    ctx.fillStyle = grd; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 2; ctx.stroke();
+
+    // small decorative holes on counterweight for lightening
+    ctx.fillStyle = '#0a0f15';
+    for (let k=-2; k<=2; k++){
+      const r = G.counterW_R*0.72;
+      const t = k*0.25;
+      ctx.beginPath(); ctx.arc(Math.cos(t)*r, Math.sin(t)*r, 5, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+
+    // main journal (centre)
+    ctx.beginPath(); ctx.arc(0,0, G.mainJournalR, 0, TAU);
+    const mg = ctx.createRadialGradient(-8,-8,4, 0,0, G.mainJournalR);
+    mg.addColorStop(0,'#d8e0e7'); mg.addColorStop(1,'#5b6a7a');
+    ctx.fillStyle = mg; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.lineWidth = 2; ctx.stroke();
+
+    // key mark on main journal for rotation perception
+    ctx.save();
+    ctx.rotate(a);
+    ctx.fillStyle = '#ffb454';
+    ctx.fillRect(G.mainJournalR-12, -3, 10, 6);
+    ctx.restore();
+
+    // crankpin
+    const cp = crankPin(a);
+    ctx.beginPath(); ctx.arc(cp.x, cp.y, G.crankPinR, 0, TAU);
+    const cg = ctx.createRadialGradient(cp.x-6, cp.y-6, 2, cp.x, cp.y, G.crankPinR);
+    cg.addColorStop(0,'#d8e0e7'); cg.addColorStop(1,'#4a5866');
+    ctx.fillStyle = cg; ctx.fill();
+    ctx.strokeStyle = '#0a0f15'; ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawTrails(){
+    const cp = crankPin(crankAngle);
+    ui.trailPts.push({x:cp.x, y:cp.y, a:crankAngle});
+    if (ui.trailPts.length > 240) ui.trailPts.shift();
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,180,84,.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ui.trailPts.forEach((p,i)=>{ if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); });
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // -------------------------------------------------------------------------
+  //  Labels (callouts)
+  // -------------------------------------------------------------------------
+  function drawLabels(){
+    const labels = [
+      { text:'Свеча зажигания',     x: 0,               y: G.plugY - G.plugH - 10, ax: -180, ay: G.plugY - G.plugH - 30 },
+      { text:'Впускной клапан',     x: -G.valveOffset,  y: G.cylTop + 24,          ax: -260, ay: G.cylTop - 20 },
+      { text:'Выпускной клапан',    x:  G.valveOffset,  y: G.cylTop + 24,          ax:  260, ay: G.cylTop - 20 },
+      { text:'Клапанная пружина',   x: -G.valveOffset,  y: G.camY + 80,            ax: -280, ay: G.camY + 60 },
+      { text:'Распредвал',          x: -G.camDX,        y: G.camY,                 ax: -300, ay: G.camY - 40 },
+      { text:'Распредвал (выпуск)', x:  G.camDX,        y: G.camY,                 ax:  300, ay: G.camY - 40 },
+      { text:'Камера сгорания',     x:  0,              y: G.cylTop + 40,          ax:  260, ay: G.cylTop + 40 },
+      { text:'Поршень',             x:  0,              y: pistonTopY(crankAngle)+G.pistonH/2, ax: -290, ay: pistonTopY(crankAngle)+G.pistonH/2 },
+      { text:'Поршневые кольца',    x:  G.pistonW/2-20, y: pistonTopY(crankAngle)+18,          ax:  280, ay: pistonTopY(crankAngle)+4 },
+      { text:'Поршневой палец',     x:  wristPin(crankAngle).x, y: wristPin(crankAngle).y,     ax: -290, ay: wristPin(crankAngle).y },
+      { text:'Шатун',               x:  0,              y: (wristPin(crankAngle).y+crankPin(crankAngle).y)/2, ax: 280, ay: (wristPin(crankAngle).y+crankPin(crankAngle).y)/2 },
+      { text:'Шатунная шейка',      x:  crankPin(crankAngle).x, y: crankPin(crankAngle).y,     ax:  290, ay: crankPin(crankAngle).y + 10 },
+      { text:'Противовес',          x: -G.counterW_R*0.7*Math.cos(crankAngle), y:  G.counterW_R*0.7*Math.sin(crankAngle), ax: -300, ay: 140 },
+      { text:'Коренная шейка (КВ)', x:  0,              y:  0,                     ax:  300, ay: 160 },
+      { text:'Цилиндр / гильза',    x: -G.pistonW/2-10, y: 40,                     ax: -310, ay: 60 },
+      { text:'Блок цилиндров',      x: -240,            y: -40,                    ax: -340, ay: -80 },
+    ];
+
+    ctx.save();
+    ctx.font = '13px system-ui, -apple-system, Segoe UI, Roboto, Inter';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle = 'rgba(230,237,243,.55)';
+    ctx.lineWidth   = 1;
+
+    for (const L of labels){
+      // leader line
+      ctx.beginPath();
+      ctx.moveTo(L.x, L.y);
+      ctx.lineTo(L.ax, L.ay);
+      ctx.stroke();
+
+      // dot at target
+      ctx.fillStyle = '#ffb454';
+      ctx.beginPath(); ctx.arc(L.x, L.y, 2.5, 0, TAU); ctx.fill();
+
+      // text box
+      const rightSide = L.ax > L.x;
+      ctx.textAlign = rightSide ? 'left' : 'right';
+      const pad = 6;
+      const metrics = ctx.measureText(L.text);
+      const tw = metrics.width + pad*2;
+      const th = 20;
+      const tx = rightSide ? L.ax+4 : L.ax-4 - tw;
+      const ty = L.ay - th/2;
+      ctx.fillStyle = 'rgba(15,21,28,.85)';
+      roundRect(tx, ty, tw, th, 6); ctx.fill();
+      ctx.strokeStyle = 'rgba(230,237,243,.18)'; ctx.stroke();
+      ctx.fillStyle = '#e6edf3';
+      ctx.fillText(L.text, rightSide ? tx+pad : tx+tw-pad, L.ay);
+    }
+    ctx.restore();
+  }
+
+  // Utility: rounded rect path
+  function roundRect(x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+    ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+    ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y);
+  }
+
+  // -------------------------------------------------------------------------
+  //  Main loop
+  // -------------------------------------------------------------------------
+  function tick(now){
+    const dt = Math.min(50, now - lastT) / 1000;
+    lastT = now;
+
+    if (ui.playing || ui.stepOnce){
+      // crank speed in radians per second. Slider value ~ "degrees per second".
+      const degPerSec = ui.speed;
+      crankAngle += rad(degPerSec) * dt * (ui.stepOnce ? 0.1 : 1);
+      ui.stepOnce = false;
+    }
+
+    draw();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
